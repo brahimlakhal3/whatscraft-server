@@ -1,0 +1,24 @@
+{
+  "name": "whatscraft-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Whatscraft backend: REST auth API + end-to-end encrypted WebSocket message relay",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "test": "bun test",
+    "smoke": "bun run scripts/smoke.ts",
+    "vectors": "bun run scripts/test-vectors.ts",
+    "verify-sealed": "bun run scripts/verify-sealed.ts"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.10"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "engines": {
+    "bun": ">=1.2.0"
+  }
+}

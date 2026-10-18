@@ -1,0 +1,22 @@
+# Render Blueprint - https://render.com/docs/blueprint-spec
+#
+# Deploys the Whatscraft relay as a free web service that builds the Dockerfile
+# in this repo. Apply with: Render Dashboard -> New -> Blueprint -> pick repo.
+services:
+  - type: web
+    name: whatscraft-relay
+    runtime: docker
+    plan: free
+    # Neon database is in us-east-2 -> keep the app next to it.
+    region: ohio
+    healthCheckPath: /v1/health
+    autoDeployTrigger: off
+    envVars:
+      # Paste the Neon connection string when the dashboard prompts for it.
+      - key: DATABASE_URL
+        sync: false
+      # Render generates a strong secret; never hardcode it here.
+      - key: JWT_SECRET
+        generateValue: true
+      - key: NODE_ENV
+        value: production
