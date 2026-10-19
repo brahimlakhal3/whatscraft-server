@@ -47,6 +47,7 @@ pinger (e.g. UptimeRobot) at `/v1/health` every 10 minutes.
 | --- | --- |
 | `POST /v1/conversations/:id/messages` | Send `{ id, kind, body: { text } }` |
 | `GET /v1/conversations/:id/messages?before=&limit=` | Newest window, oldest-first |
+| `POST /v1/conversations/:id/read` | Advance unread (`{ seq, receipt }`); `receipt:false` keeps the position private |
 | `POST /v1/conversations/:id/clear` | Hide the history for my account |
 | `POST /v1/messages/clear` | Hide every chat's history for my account |
 
@@ -56,6 +57,11 @@ are ordinary JSON; reactions are rows of kind `reaction`. The old encrypted
 body shape (`{ alg, iv, ct, sig }` plus per-device envelopes) is still
 *accepted* from phones that have not updated, but those rows are no longer
 displayed by the current app and are removed on boot.
+
+Read receipts are a separate per-member watermark (`receipt_seq`), returned to
+the other side as `peerLastReadSeq`. It only moves when receipts are switched
+on, so blue ticks survive a restart while people who disabled receipts never
+reveal their read position.
 
 ## Environment
 

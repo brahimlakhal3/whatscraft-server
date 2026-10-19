@@ -357,6 +357,13 @@ check("typing indicator arrives", typing.userId === bob.user.id && typing.state 
 bobClient.send({ t: "read", conversationId, seq: Number(replyAck.seq) });
 const read = await aliceClient.ofType("read");
 check("read receipt arrives", read.userId === bob.user.id && Number(read.seq) === Number(replyAck.seq), read);
+const aliceAfterRead = (await ok("/v1/conversations", { token: alice.accessToken })).conversations
+  .find((c: any) => c.id === conversationId);
+check(
+  "the peer's read watermark comes back with the chat",
+  Number(aliceAfterRead?.peerLastReadSeq ?? 0) >= Number(replyAck.seq),
+  aliceAfterRead?.peerLastReadSeq,
+);
 
 section("10. History");
 const history = await ok(`/v1/conversations/${conversationId}/messages?limit=50`, { token: bobSecondLogin.accessToken });
@@ -605,6 +612,47 @@ const bobStillSees = await ok(`/v1/conversations/${acceptedAgain.conversationId}
   token: newLogin.accessToken,
 });
 check("clearing is per-account", bobStillSees.messages.length === 2, bobStillSees.messages.length);
+
+// Read receipts are a separate watermark: turning them off still advances
+// unread bookkeeping but must not reveal the read position to the sender.
+const beforeReceipt = Number(
+  (await ok("/v1/conversations", { token: alice.accessToken })).conversations
+    .find((c: any) => c.id === acceptedAgain.conversationId)?.peerLastReadSeq ?? 0,
+);
+const receiptProbe = await ok(`/v1/conversations/${acceptedAgain.conversationId}/messages`, {
+  method: "POST",
+  token: alice.accessToken,
+  body: { id: crypto.randomUUID(), kind: "text", body: { text: "receipt probe" } },
+});
+await ok(`/v1/conversations/${acceptedAgain.conversationId}/read`, {
+  method: "POST",
+  token: newLogin.accessToken,
+  body: { seq: Number(receiptProbe.message.seq), receipt: false },
+});
+const hiddenReceipt = Number(
+  (await ok("/v1/conversations", { token: alice.accessToken })).conversations
+    .find((c: any) => c.id === acceptedAgain.conversationId)?.peerLastReadSeq ?? 0,
+);
+check(
+  "receipts stay private when they are switched off",
+  hiddenReceipt === beforeReceipt,
+  [beforeReceipt, hiddenReceipt],
+);
+
+await ok(`/v1/conversations/${acceptedAgain.conversationId}/read`, {
+  method: "POST",
+  token: newLogin.accessToken,
+  body: { seq: Number(receiptProbe.message.seq), receipt: true },
+});
+const sharedReceipt = Number(
+  (await ok("/v1/conversations", { token: alice.accessToken })).conversations
+    .find((c: any) => c.id === acceptedAgain.conversationId)?.peerLastReadSeq ?? 0,
+);
+check(
+  "a shared receipt survives a refresh",
+  sharedReceipt >= Number(receiptProbe.message.seq),
+  [receiptProbe.message.seq, sharedReceipt],
+);
 
 const keylessSuffix = Math.random().toString(36).slice(2, 8);
 const keyless = await ok("/v1/auth/register", {

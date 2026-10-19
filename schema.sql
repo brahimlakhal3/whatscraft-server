@@ -80,6 +80,23 @@ CREATE TABLE IF NOT EXISTS conversation_members (
 CREATE INDEX IF NOT EXISTS members_user_idx ON conversation_members(user_id);
 ALTER TABLE conversation_members ADD COLUMN IF NOT EXISTS cleared_seq bigint NOT NULL DEFAULT 0;
 
+-- Read receipts are a watermark, separate from unread bookkeeping: the app
+-- always updates last_read_seq so unread stays correct, but receipt_seq only
+-- moves when the person has read receipts switched on. Exposing receipt_seq to
+-- the other side is what makes blue ticks survive a restart.
+ALTER TABLE conversation_members ADD COLUMN IF NOT EXISTS receipt_seq bigint NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  name       text PRIMARY KEY,
+  applied_at timestamptz NOT NULL DEFAULT now()
+);
+WITH inserted AS (
+  INSERT INTO schema_migrations (name) VALUES ('receipt_seq_backfill')
+  ON CONFLICT (name) DO NOTHING
+  RETURNING 1
+)
+UPDATE conversation_members SET receipt_seq = last_read_seq
+WHERE receipt_seq = 0 AND EXISTS (SELECT 1 FROM inserted);
+
 CREATE TABLE IF NOT EXISTS messages (
   id               uuid PRIMARY KEY,                 -- client generated (idempotent send)
   conversation_id  uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,

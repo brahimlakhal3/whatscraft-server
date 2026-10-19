@@ -724,16 +724,23 @@ route("POST", "/v1/conversations/:id/read", true, async ({ req, params, auth, ct
   const conversationId = uuid(params.id, "id");
   const body = await readJson(req);
   const seq = int(body.seq, "seq", { min: 0 });
+  // The app still needs to advance its unread watermark when receipts are
+  // switched off; only the shared receipt (and the live frame) is optional.
+  const shareReceipt = body.receipt !== false;
   if (!(await ctx.store.isMember(conversationId, me.userId))) {
     throw new ApiError(403, "not_a_member", "You are not a member of this conversation.");
   }
-  await ctx.store.updateLastRead(conversationId, me.userId, seq);
+  await ctx.store.updateLastRead(conversationId, me.userId, seq, shareReceipt);
 
-  const members = await ctx.store.memberIds(conversationId);
-  ctx.hub.sendToUsers(members, { t: "read", conversationId, userId: me.userId, seq }, {
-    exceptUserId: me.userId,
-  });
-  return json({ ok: true });
+  if (shareReceipt) {
+    const members = await ctx.store.memberIds(conversationId);
+    ctx.hub.sendToUsers(
+      members,
+      { t: "read", conversationId, userId: me.userId, seq },
+      { exceptUserId: me.userId },
+    );
+  }
+  return json({ ok: true, shareReceipt });
 });
 
 route("POST", "/v1/conversations/:id/mute", true, async ({ req, params, auth, ctx }) => {

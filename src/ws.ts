@@ -195,7 +195,7 @@ export async function onMessage(
         const seq = Number(frame.seq ?? 0);
         if (!conversationId || !Number.isFinite(seq)) return;
         if (!(await store.isMember(conversationId, userId))) return;
-        await store.updateLastRead(conversationId, userId, Math.trunc(seq));
+        await store.updateLastRead(conversationId, userId, Math.trunc(seq), true);
         const members = await store.memberIds(conversationId);
         hub.sendToUsers(
           members,
