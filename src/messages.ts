@@ -175,18 +175,21 @@ export async function deliverMessage(
   });
 
   const recipients = members.filter((memberId) => memberId !== sender.userId);
-  const senderProfile = await store.findPublicUserById(sender.userId);
-  await notifyNewMessage(
-    store,
-    recipients,
-    (userId) => hub.isUserOnline(userId),
-    {
-      title: senderProfile?.displayName || senderProfile?.username || "New message",
-      body: "New message",
-      data: { type: "message", conversationId: message.conversationId },
-    },
-    sender.deviceId,
-  ).catch((error) => console.error("[push] failed:", error));
+  // Reactions are not messages a phone should buzz for.
+  if (message.kind !== "reaction") {
+    const senderProfile = await store.findPublicUserById(sender.userId);
+    await notifyNewMessage(
+      store,
+      recipients,
+      (userId) => hub.isUserOnline(userId),
+      {
+        title: senderProfile?.displayName || senderProfile?.username || "New message",
+        body: "New message",
+        data: { type: "message", conversationId: message.conversationId },
+      },
+      sender.deviceId,
+    ).catch((error) => console.error("[push] failed:", error));
+  }
 
   return { message, duplicate: false };
 }

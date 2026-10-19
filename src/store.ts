@@ -443,6 +443,20 @@ export class Store {
     );
   }
 
+  /**
+   * Deletes the direct conversation between two users (if one exists). Used
+   * when they disconnect: neither side should keep a chat they can write to
+   * until a new invitation is accepted. Messages and envelopes cascade.
+   */
+  async deleteDirect(a: string, b: string): Promise<string[]> {
+    const directKey = [a, b].sort().join(":");
+    const rows = await this.query<{ id: string }>(
+      `delete from conversations where direct_key = $1 returning id`,
+      [directKey],
+    );
+    return rows.map((row) => row.id);
+  }
+
   /** Accepted friends, pending incoming requests and pending outgoing requests. */
   async listFriendGraph(userId: string): Promise<{
     friends: FriendshipDto[];
@@ -565,7 +579,7 @@ export class Store {
       left join lateral (
         select id, body, seq, sender_id, sender_device_id, kind, created_at
         from messages
-        where conversation_id = c.id and deleted_at is null
+        where conversation_id = c.id and deleted_at is null and kind <> 'reaction'
         order by seq desc limit 1
       ) lm on true
       left join lateral (
@@ -580,7 +594,7 @@ export class Store {
       left join lateral (
         select count(*) as n from messages msg
         where msg.conversation_id = c.id and msg.seq > m.last_read_seq
-          and msg.sender_id <> $1 and msg.deleted_at is null
+          and msg.sender_id <> $1 and msg.deleted_at is null and msg.kind <> 'reaction'
       ) unread on true
       where ${filter}
       order by coalesce(lm.created_at, c.created_at) desc`;

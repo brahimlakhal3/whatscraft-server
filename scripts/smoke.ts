@@ -458,6 +458,95 @@ const bobConversations = await ok("/v1/conversations", { token: newLogin.accessT
 check("unread count resets after reading", bobConversations.conversations[0].unread === 0,
   bobConversations.conversations[0].unread);
 
+section("16. Reactions");
+const beforeReaction = (await ok("/v1/conversations", { token: alice.accessToken })).conversations[0];
+const reactionId = crypto.randomUUID();
+const reactionSealed = await sealMessage(
+  bob.identity,
+  conversationId,
+  reactionId,
+  `react|${firstMessageId}|❤️`,
+  allDevices,
+);
+await ok(`/v1/conversations/${conversationId}/messages`, {
+  method: "POST",
+  token: newLogin.accessToken,
+  body: {
+    id: reactionId,
+    kind: "reaction",
+    body: reactionSealed.body,
+    envelopes: reactionSealed.envelopes,
+  },
+});
+const afterReaction = (await ok("/v1/conversations", { token: alice.accessToken })).conversations[0];
+check(
+  "a reaction does not replace the chat preview",
+  afterReaction.lastMessage.id === beforeReaction.lastMessage.id,
+  afterReaction.lastMessage,
+);
+check(
+  "a reaction does not add unread",
+  afterReaction.unread === beforeReaction.unread,
+  [beforeReaction.unread, afterReaction.unread],
+);
+
+section("17. Removing a connection is mutual");
+await ok(`/v1/friends/${alice.user.id}`, { method: "DELETE", token: newLogin.accessToken });
+const aliceGraph = await ok("/v1/friends", { token: alice.accessToken });
+const bobGraph = await ok("/v1/friends", { token: newLogin.accessToken });
+check("the removed side keeps no friends", aliceGraph.friends.length === 0, aliceGraph.friends);
+check("the removing side keeps no friends", bobGraph.friends.length === 0, bobGraph.friends);
+
+const aliceChats = await ok("/v1/conversations", { token: alice.accessToken });
+const bobChats = await ok("/v1/conversations", { token: newLogin.accessToken });
+check(
+  "the chat disappears for both sides",
+  aliceChats.conversations.length === 0 && bobChats.conversations.length === 0,
+  [aliceChats.conversations.length, bobChats.conversations.length],
+);
+
+const removedFrame = await aliceClient.expect(
+  (frame) => frame.t === "conversation_removed" && frame.conversationId === conversationId,
+  4000,
+);
+check("the other phone is told the chat is gone", removedFrame.conversationId === conversationId);
+
+const postRemoval = await api(`/v1/conversations/${conversationId}/messages`, {
+  method: "POST",
+  token: newLogin.accessToken,
+  body: {
+    id: crypto.randomUUID(),
+    kind: "text",
+    body: sealed.body,
+    envelopes: sealed.envelopes,
+  },
+});
+check("a deleted conversation cannot be written to", postRemoval.status === 403, postRemoval.data);
+
+section("18. Chatting again needs a new invitation");
+await ok("/v1/friends/requests", {
+  method: "POST",
+  token: newLogin.accessToken,
+  body: { username: alice.username },
+});
+const aliceIncoming = await ok("/v1/friends", { token: alice.accessToken });
+check("the new invitation reaches alice", aliceIncoming.incoming.length === 1, aliceIncoming.incoming);
+const acceptedAgain = await ok(`/v1/friends/requests/${aliceIncoming.incoming[0].id}/accept`, {
+  method: "POST",
+  token: alice.accessToken,
+});
+check(
+  "accepting opens a fresh conversation",
+  Boolean(acceptedAgain.conversationId) && acceptedAgain.conversationId !== conversationId,
+  acceptedAgain.conversationId,
+);
+const freshChats = await ok("/v1/conversations", { token: newLogin.accessToken });
+check(
+  "the fresh chat starts empty",
+  freshChats.conversations.length === 1 && freshChats.conversations[0].lastMessage === null,
+  freshChats.conversations[0],
+);
+
 // ------------------------------------------------------------------- teardown --
 aliceClient.close();
 bobClient.close();

@@ -17,6 +17,7 @@
  *   { t:"presence", userId, online, lastSeen }
  *   { t:"friend", kind:"request"|"accepted"|"removed", user, requestId? }
  *   { t:"conversation", conversation }
+ *   { t:"conversation_removed", conversationId }
  *   { t:"err",    code, message, clientId? }
  *   { t:"pong" }
  *

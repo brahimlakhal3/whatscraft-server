@@ -580,7 +580,19 @@ route("POST", "/v1/friends/requests/:id/decline", true, async ({ params, auth, c
 route("DELETE", "/v1/friends/:userId", true, async ({ params, auth, ctx }) => {
   const me = needAuth(auth);
   const otherId = uuid(params.userId, "userId");
+  if (otherId === me.userId) return noContent();
+
+  // Removing a connection is mutual: both friendship rows go, and so does the
+  // direct conversation. Neither side can write to the other until a new
+  // invitation is accepted (which creates a fresh, empty conversation).
   await ctx.store.deleteFriendshipBetween(me.userId, otherId);
+  const removedConversations = await ctx.store.deleteDirect(me.userId, otherId);
+  for (const conversationId of removedConversations) {
+    for (const viewer of [me.userId, otherId]) {
+      ctx.hub.sendToUser(viewer, { t: "conversation_removed", conversationId });
+    }
+  }
+
   const meUser = await ctx.store.findUserById(me.userId);
   ctx.hub.sendToUser(otherId, { t: "friend", kind: "removed", user: meUser && publicUser(meUser) });
   return noContent();
