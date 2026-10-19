@@ -2,9 +2,12 @@
  * Message delivery - the single code path shared by the REST fallback and the
  * WebSocket handler, so both behave identically.
  *
- * The server only ever handles opaque blobs:
- *   body      = { alg:"A256GCM", iv, ct, sig }        (AES-256-GCM, signed)
- *   envelopes = { deviceId, wrappedKey:{ alg, iv, ct } }  (per-device key wrap)
+ * Messages are stored as plain JSON in the cloud:
+ *   body = { text: "hello" }
+ *
+ * The legacy encrypted shape ({ alg, iv, ct, sig } + per-device envelopes) is
+ * still accepted so a phone that has not updated yet can keep sending, but its
+ * bodies are never shown by the current client.
  */
 import { config } from "./config.ts";
 import type { Store, Envelope, MessageDto } from "./store.ts";
@@ -36,12 +39,25 @@ export interface SendMessageInput {
   conversationId: string;
   kind?: string;
   body: unknown;
-  envelopes: Array<{ deviceId: string; wrappedKey: unknown }>;
+  envelopes?: Array<{ deviceId: string; wrappedKey: unknown }>;
   /** Echoed back in the ack so the client can match optimistic UI state. */
   clientId?: string;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The new, cloud-visible message text. Null for a legacy encrypted body. */
+function plaintextOf(body: unknown): string | null {
+  if (typeof body !== "object" || body === null) {
+    throw new ApiError(400, "invalid_body", "Message body must be an object.");
+  }
+  const text = (body as Record<string, unknown>).text;
+  if (typeof text !== "string") return null;
+  if (text.trim().length === 0) {
+    throw new ApiError(400, "empty_text", "A message cannot be empty.");
+  }
+  return text;
+}
 
 function assertPayloadShape(body: unknown): void {
   if (typeof body !== "object" || body === null) {
@@ -75,14 +91,17 @@ export async function deliverMessage(
     throw new ApiError(403, "not_a_member", "You are not a member of this conversation.");
   }
 
-  assertPayloadShape(input.body);
+  const text = plaintextOf(input.body);
+  const legacy = text === null;
+  if (legacy) assertPayloadShape(input.body);
+
   const bodyJson = JSON.stringify(input.body);
   if (bodyJson.length > config.limits.maxMessageBytes) {
     throw new ApiError(413, "message_too_large", "Message is too large.");
   }
 
   const envelopes = Array.isArray(input.envelopes) ? input.envelopes : [];
-  if (envelopes.length === 0) {
+  if (legacy && envelopes.length === 0) {
     throw new ApiError(400, "missing_envelopes", "At least one recipient envelope is required.");
   }
   if (envelopes.length > config.limits.maxEnvelopesPerMessage) {
@@ -92,20 +111,22 @@ export async function deliverMessage(
   // Only devices that belong to a member of this conversation may receive keys.
   const members = await store.memberIds(input.conversationId);
   const memberDevices = new Map<string, string>(); // deviceId -> userId
-  for (const memberId of members) {
-    for (const device of await store.listDevices(memberId)) {
-      memberDevices.set(device.id, memberId);
+  if (legacy) {
+    for (const memberId of members) {
+      for (const device of await store.listDevices(memberId)) {
+        memberDevices.set(device.id, memberId);
+      }
     }
-  }
-  for (const envelope of envelopes) {
-    if (!UUID_RE.test(envelope.deviceId)) {
-      throw new ApiError(400, "invalid_envelope", "Envelope deviceId must be a UUID.");
-    }
-    if (!memberDevices.has(envelope.deviceId)) {
-      throw new ApiError(400, "invalid_envelope", "Envelope targets a device outside this conversation.");
-    }
-    if (typeof envelope.wrappedKey !== "object" || envelope.wrappedKey === null) {
-      throw new ApiError(400, "invalid_envelope", "wrappedKey must be an object.");
+    for (const envelope of envelopes) {
+      if (!UUID_RE.test(envelope.deviceId)) {
+        throw new ApiError(400, "invalid_envelope", "Envelope deviceId must be a UUID.");
+      }
+      if (!memberDevices.has(envelope.deviceId)) {
+        throw new ApiError(400, "invalid_envelope", "Envelope targets a device outside this conversation.");
+      }
+      if (typeof envelope.wrappedKey !== "object" || envelope.wrappedKey === null) {
+        throw new ApiError(400, "invalid_envelope", "wrappedKey must be an object.");
+      }
     }
   }
 
@@ -126,21 +147,25 @@ export async function deliverMessage(
     return { message: existing, duplicate: true };
   }
 
-  for (const envelope of envelopes) {
-    await store.insertEnvelope(
-      message.id,
-      memberDevices.get(envelope.deviceId)!,
-      envelope.deviceId,
-      envelope.wrappedKey,
-    );
+  if (legacy) {
+    for (const envelope of envelopes) {
+      await store.insertEnvelope(
+        message.id,
+        memberDevices.get(envelope.deviceId)!,
+        envelope.deviceId,
+        envelope.wrappedKey,
+      );
+    }
   }
 
   const envelopesByUser = new Map<string, Envelope[]>();
-  for (const envelope of envelopes) {
-    const ownerId = memberDevices.get(envelope.deviceId)!;
-    const list = envelopesByUser.get(ownerId) ?? [];
-    list.push({ deviceId: envelope.deviceId, wrappedKey: envelope.wrappedKey });
-    envelopesByUser.set(ownerId, list);
+  if (legacy) {
+    for (const envelope of envelopes) {
+      const ownerId = memberDevices.get(envelope.deviceId)!;
+      const list = envelopesByUser.get(ownerId) ?? [];
+      list.push({ deviceId: envelope.deviceId, wrappedKey: envelope.wrappedKey });
+      envelopesByUser.set(ownerId, list);
+    }
   }
 
   // Fan out: everyone except the sending device gets `msg` (also the sender's

@@ -3,7 +3,7 @@
  *
  * client -> server
  *   { t:"auth",   token }                                   access token
- *   { t:"send",   clientId, conversationId, kind, body, envelopes }
+ *   { t:"send",   clientId, conversationId, kind, body }
  *   { t:"typing", conversationId, state:"start"|"stop" }
  *   { t:"read",   conversationId, seq }
  *   { t:"ping" }

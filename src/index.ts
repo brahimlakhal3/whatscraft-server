@@ -4,7 +4,8 @@
  *  - REST API under /v1      (auth, friends, conversations, history)
  *  - WebSocket under /ws     (realtime delivery, typing, presence, receipts)
  *
- * The relay stores ciphertext and public keys only; it cannot read messages.
+ * Messages live in Postgres as plain text so every device sees the same
+ * history; the relay can read what it stores, so run your own instance.
  */
 import { handleApi, sweepRateLimits } from "./api.ts";
 import { config } from "./config.ts";

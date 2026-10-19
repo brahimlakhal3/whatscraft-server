@@ -191,11 +191,17 @@ async function issueTokens(ctx: ApiContext, userId: string, deviceId: string) {
 
 function parseDevice(input: unknown) {
   const device = (input ?? {}) as Record<string, any>;
+  // Device key pairs were part of the old end-to-end design. They are optional
+  // now: the app only sends an id and a name, while older installs can keep
+  // presenting their public keys.
+  const identityKey = device.identityKey
+    ? str(device.identityKey, "device.identityKey", { min: 40, max: 64 })
+    : "";
   return {
     id: uuid(device.id, "device.id"),
     name: str(device.name ?? "Phone", "device.name", { min: 1, max: 40 }),
     platform: str(device.platform ?? "android", "device.platform", { min: 1, max: 20 }),
-    identityKey: str(device.identityKey, "device.identityKey", { min: 40, max: 64 }),
+    identityKey,
     signingKey: device.signingKey
       ? str(device.signingKey, "device.signingKey", { min: 40, max: 64 })
       : null,
@@ -739,6 +745,23 @@ route("POST", "/v1/conversations/:id/mute", true, async ({ req, params, auth, ct
   }
   await ctx.store.setMuted(conversationId, me.userId, Boolean(body.muted));
   return json({ ok: true, muted: Boolean(body.muted) });
+});
+
+route("POST", "/v1/conversations/:id/clear", true, async ({ params, auth, ctx }) => {
+  const me = needAuth(auth);
+  const conversationId = uuid(params.id, "id");
+  if (!(await ctx.store.isMember(conversationId, me.userId))) {
+    throw new ApiError(403, "not_a_member", "You are not a member of this conversation.");
+  }
+  const clearedSeq = await ctx.store.clearConversation(conversationId, me.userId);
+  return json({ ok: true, clearedSeq });
+});
+
+/** The "delete all messages" switch: hides history in every chat for me. */
+route("POST", "/v1/messages/clear", true, async ({ auth, ctx }) => {
+  const me = needAuth(auth);
+  await ctx.store.clearAllConversations(me.userId);
+  return json({ ok: true });
 });
 
 // -- devices ------------------------------------------------------------------

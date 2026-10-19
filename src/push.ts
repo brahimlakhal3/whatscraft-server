@@ -1,7 +1,7 @@
 /**
  * Firebase Cloud Messaging (HTTP v1) push, used only to *wake up* a device that
- * has no live WebSocket. Payloads never contain plaintext: the app fetches the
- * ciphertext from the relay after the push arrives.
+ * has no live WebSocket. Payloads carry a generic title and no message text: the
+ * app loads the conversation from the relay when it opens.
  *
  * Entirely optional - if FCM_* is not configured every function degrades to a
  * no-op and background delivery relies on the app's foreground service.

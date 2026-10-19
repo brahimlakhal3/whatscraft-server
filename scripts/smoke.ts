@@ -4,9 +4,12 @@
  *   bun run src/index.ts        # terminal 1
  *   bun run scripts/smoke.ts    # terminal 2
  *
- * It registers two accounts (one with two devices), connects real WebSockets,
- * encrypts with the real X25519/AES-256-GCM scheme and verifies decryption,
- * signatures, typing, receipts, history, dedup and account recovery.
+ * It registers accounts (one with two devices), connects real WebSockets, and
+ * verifies auth, friends, plaintext delivery, typing, receipts, history, dedup
+ * and account recovery. The last section covers the current cloud model:
+ * readable message bodies, per-account clear, and keyless device registration.
+ * Earlier sections still exercise the legacy encrypted frame shape, which the
+ * relay keeps accepting for installs that have not updated.
  */
 import {
   generateIdentity,
@@ -545,6 +548,79 @@ check(
   "the fresh chat starts empty",
   freshChats.conversations.length === 1 && freshChats.conversations[0].lastMessage === null,
   freshChats.conversations[0],
+);
+
+section("19. Cloud history without keys");
+const plainId = crypto.randomUUID();
+const plainSent = await ok(`/v1/conversations/${acceptedAgain.conversationId}/messages`, {
+  method: "POST",
+  token: newLogin.accessToken,
+  body: { id: plainId, kind: "text", body: { text: "hello from the cloud" } },
+});
+check(
+  "plaintext messages are accepted without envelopes",
+  plainSent.message.body.text === "hello from the cloud",
+  plainSent.message.body,
+);
+const plainPage = await ok(`/v1/conversations/${acceptedAgain.conversationId}/messages?limit=30`, {
+  token: alice.accessToken,
+});
+check(
+  "history returns the plain text",
+  plainPage.messages.at(-1)?.body?.text === "hello from the cloud",
+  plainPage.messages,
+);
+const plainPreview = (await ok("/v1/conversations", { token: alice.accessToken })).conversations[0];
+check(
+  "the chat preview carries the plain text",
+  plainPreview.lastMessage?.body?.text === "hello from the cloud",
+  plainPreview.lastMessage,
+);
+
+await ok(`/v1/conversations/${acceptedAgain.conversationId}/clear`, {
+  method: "POST",
+  token: alice.accessToken,
+});
+const clearedPage = await ok(`/v1/conversations/${acceptedAgain.conversationId}/messages?limit=30`, {
+  token: alice.accessToken,
+});
+check("clearing hides my copy of the history", clearedPage.messages.length === 0, clearedPage.messages);
+const clearedPreview = (await ok("/v1/conversations", { token: alice.accessToken })).conversations[0];
+check("clearing also hides the preview", clearedPreview.lastMessage === null, clearedPreview.lastMessage);
+
+await ok(`/v1/conversations/${acceptedAgain.conversationId}/messages`, {
+  method: "POST",
+  token: newLogin.accessToken,
+  body: { id: crypto.randomUUID(), kind: "text", body: { text: "fresh start" } },
+});
+const afterClearPage = await ok(`/v1/conversations/${acceptedAgain.conversationId}/messages?limit=30`, {
+  token: alice.accessToken,
+});
+check(
+  "new messages arrive after a clear",
+  afterClearPage.messages.length === 1 && afterClearPage.messages[0].body.text === "fresh start",
+  afterClearPage.messages,
+);
+const bobStillSees = await ok(`/v1/conversations/${acceptedAgain.conversationId}/messages?limit=30`, {
+  token: newLogin.accessToken,
+});
+check("clearing is per-account", bobStillSees.messages.length === 2, bobStillSees.messages.length);
+
+const keylessSuffix = Math.random().toString(36).slice(2, 8);
+const keyless = await ok("/v1/auth/register", {
+  method: "POST",
+  body: {
+    username: `nokey${keylessSuffix}`,
+    displayName: "No Key",
+    password: "password123",
+    device: { id: crypto.randomUUID(), name: "Test", platform: "android" },
+    ...gate,
+  },
+});
+check(
+  "registration works without device keys",
+  Boolean(keyless.accessToken) && keyless.device.identityKey === "",
+  keyless.device,
 );
 
 // ------------------------------------------------------------------- teardown --

@@ -580,6 +580,7 @@ export class Store {
         select id, body, seq, sender_id, sender_device_id, kind, created_at
         from messages
         where conversation_id = c.id and deleted_at is null and kind <> 'reaction'
+          and seq > m.cleared_seq
         order by seq desc limit 1
       ) lm on true
       left join lateral (
@@ -594,6 +595,7 @@ export class Store {
       left join lateral (
         select count(*) as n from messages msg
         where msg.conversation_id = c.id and msg.seq > m.last_read_seq
+          and msg.seq > m.cleared_seq
           and msg.sender_id <> $1 and msg.deleted_at is null and msg.kind <> 'reaction'
       ) unread on true
       where ${filter}
@@ -701,6 +703,41 @@ export class Store {
     );
   }
 
+  /**
+   * Hides every message currently in the conversation for one member. The
+   * other side keeps the history and new messages arrive normally.
+   */
+  async clearConversation(conversationId: string, userId: string): Promise<number> {
+    const rows = await this.query<{ cleared_seq: string }>(
+      `update conversation_members cm
+       set cleared_seq = greatest(cm.cleared_seq, coalesce((
+             select max(seq) from messages where conversation_id = cm.conversation_id
+           ), 0)),
+           last_read_seq = greatest(cm.last_read_seq, coalesce((
+             select max(seq) from messages where conversation_id = cm.conversation_id
+           ), 0))
+       where cm.conversation_id = $1 and cm.user_id = $2
+       returning cm.cleared_seq`,
+      [conversationId, userId],
+    );
+    return Number(rows[0]?.cleared_seq ?? 0);
+  }
+
+  /** Clears every conversation for one member (the "delete all messages" button). */
+  async clearAllConversations(userId: string): Promise<void> {
+    await this.query(
+      `update conversation_members cm
+       set cleared_seq = greatest(cm.cleared_seq, coalesce((
+             select max(seq) from messages where conversation_id = cm.conversation_id
+           ), 0)),
+           last_read_seq = greatest(cm.last_read_seq, coalesce((
+             select max(seq) from messages where conversation_id = cm.conversation_id
+           ), 0))
+       where cm.user_id = $1`,
+      [userId],
+    );
+  }
+
   // -- messages ------------------------------------------------------------
 
   async insertMessage(input: {
@@ -773,7 +810,12 @@ export class Store {
          from envelopes e
          where e.message_id = m.id and e.recipient_user_id = $2
        ) env on true
-       where m.conversation_id = $1 ${cursor}
+       where m.conversation_id = $1
+         and m.seq > coalesce((
+           select cleared_seq from conversation_members
+           where conversation_id = $1 and user_id = $2
+         ), 0)
+         ${cursor}
        order by m.seq desc
        limit $${params.length}`,
       params,

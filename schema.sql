@@ -1,5 +1,6 @@
 -- Whatscraft schema (PostgreSQL 13+). Applied idempotently at boot.
--- The server is a blind relay: it stores ciphertext and public keys only.
+-- Messages are stored in the cloud as plain text so every signed-in device can
+-- read them. Device keys are still used to identify installs for sessions.
 
 CREATE TABLE IF NOT EXISTS users (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -71,10 +72,13 @@ CREATE TABLE IF NOT EXISTS conversation_members (
   role            text NOT NULL DEFAULT 'member',
   joined_at       timestamptz NOT NULL DEFAULT now(),
   last_read_seq   bigint NOT NULL DEFAULT 0,
+  -- Messages at or below this seq are hidden from this member ("clear chat").
+  cleared_seq     bigint NOT NULL DEFAULT 0,
   muted           boolean NOT NULL DEFAULT false,
   PRIMARY KEY (conversation_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS members_user_idx ON conversation_members(user_id);
+ALTER TABLE conversation_members ADD COLUMN IF NOT EXISTS cleared_seq bigint NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS messages (
   id               uuid PRIMARY KEY,                 -- client generated (idempotent send)
@@ -83,15 +87,20 @@ CREATE TABLE IF NOT EXISTS messages (
   sender_device_id uuid,
   seq              bigserial,
   kind             text NOT NULL DEFAULT 'text',
-  body             text NOT NULL,                    -- JSON: {alg,iv,ct,sig}
+  body             text NOT NULL,                    -- JSON: {text}
   created_at       timestamptz NOT NULL DEFAULT now(),
   edited_at        timestamptz,
   deleted_at       timestamptz
 );
 CREATE INDEX IF NOT EXISTS messages_conversation_idx ON messages(conversation_id, seq DESC);
 
--- One wrapped copy of the random message key per recipient device.
--- The server can never unwrap these (it has no X25519 private keys).
+-- End-to-end encryption was removed in v2. Rows from the old client cannot be
+-- read by anyone and would only confuse the cloud history, so drop them on
+-- boot. New rows always carry {"text": ...}; this statement is idempotent.
+DELETE FROM messages WHERE body NOT LIKE '%"text"%';
+
+-- Legacy key-wrap table. Kept so an old database can be migrated in place;
+-- new messages never write to it and the cleanup above cascades old rows away.
 CREATE TABLE IF NOT EXISTS envelopes (
   message_id          uuid NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
   recipient_user_id   uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
