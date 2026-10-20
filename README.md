@@ -31,7 +31,6 @@ anymore.
    The included `render.yaml` creates a free Docker web service in Ohio.
 3. When prompted, paste your Postgres connection string as `DATABASE_URL`
    (the `JWT_SECRET` is generated automatically).
-   Optionally set `REGISTER_CODE` to keep the relay invite-only.
 4. After the first deploy, note the service URL
    (`https://whatscraft-relay-xxxx.onrender.com`) and put it in the app's
    **Server** setting.
@@ -45,9 +44,10 @@ pinger (e.g. UptimeRobot) at `/v1/health` every 10 minutes.
 
 | Route | Purpose |
 | --- | --- |
+| `GET /v1/people` | Everyone on this relay, with the viewer's relationship (Invite/Sent/Accept/Chat) |
 | `POST /v1/conversations/:id/messages` | Send `{ id, kind, body: { text } }` |
 | `GET /v1/conversations/:id/messages?before=&limit=` | Newest window, oldest-first |
-| `POST /v1/conversations/:id/read` | Advance unread (`{ seq, receipt }`); `receipt:false` keeps the position private |
+| `POST /v1/conversations/:id/read` | Advance my unread watermark (`{ seq }`) |
 | `POST /v1/conversations/:id/clear` | Hide the history for my account |
 | `POST /v1/messages/clear` | Hide every chat's history for my account |
 
@@ -58,10 +58,9 @@ body shape (`{ alg, iv, ct, sig }` plus per-device envelopes) is still
 *accepted* from phones that have not updated, but those rows are no longer
 displayed by the current app and are removed on boot.
 
-Read receipts are a separate per-member watermark (`receipt_seq`), returned to
-the other side as `peerLastReadSeq`. It only moves when receipts are switched
-on, so blue ticks survive a restart while people who disabled receipts never
-reveal their read position.
+Reading a conversation only moves the unread watermark. The relay never tells
+the other side which message was read; the app shows whether the server
+accepted a message, not a read mark.
 
 ## Environment
 
@@ -70,7 +69,6 @@ reveal their read position.
 | `PORT` | HTTP port (Render sets this; defaults to 8080) |
 | `DATABASE_URL` | Postgres connection string; empty = embedded PGlite |
 | `JWT_SECRET` | Signing secret for access tokens; required in production |
-| `REGISTER_CODE` | When set, new registrations must present this code |
 | `ACCESS_TTL_SECONDS`, `REFRESH_TTL_DAYS` | Token lifetimes |
 | `FCM_PROJECT_ID`, `FCM_CLIENT_EMAIL`, `FCM_PRIVATE_KEY` | Optional background push (Firebase HTTP v1) |
 
@@ -79,8 +77,8 @@ reveal their read position.
 With a server running locally:
 
 ```sh
-BASE_URL=http://127.0.0.1:8080 bun run smoke            # 59 assertions
-BASE_URL=https://your-service.onrender.com REGISTER_CODE=... bun run smoke
+BASE_URL=http://127.0.0.1:8080 bun run smoke
+BASE_URL=https://your-service.onrender.com bun run smoke
 ```
 
 The final smoke section covers the cloud model directly: plaintext bodies with

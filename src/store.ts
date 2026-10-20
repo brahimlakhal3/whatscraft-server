@@ -64,8 +64,6 @@ export interface ConversationDto {
   createdBy: string | null;
   createdAt: string;
   lastReadSeq: number;
-  /** How far the other member(s) have shared their read receipts. */
-  peerLastReadSeq: number;
   unread: number;
   muted: boolean;
   members: PublicUser[];
@@ -78,6 +76,13 @@ export interface FriendshipDto {
   createdAt: string;
   respondedAt: string | null;
   user: PublicUser;
+}
+
+/** One row in the people directory, with this viewer's relationship to them. */
+export interface DirectoryUserDto {
+  user: PublicUser;
+  relationship: "friends" | "pending_outgoing" | "pending_incoming" | "none";
+  requestId: string | null;
 }
 
 // ----------------------------------------------------------------- helpers --
@@ -503,6 +508,51 @@ export class Store {
     return { friends, incoming, outgoing };
   }
 
+  /**
+   * Everyone on the relay, for the invitation directory. Each row carries the
+   * viewer's relationship so the app can show Invite, Sent, Accept or Chat.
+   */
+  async listDirectory(viewerId: string, query: string, limit: number): Promise<DirectoryUserDto[]> {
+    const rows = await this.query(
+      `select u.id, u.username, u.display_name, u.about, u.avatar_shade, u.last_seen,
+              f.id as friendship_id, f.status as friendship_status, f.requester_id
+       from users u
+       left join lateral (
+         select f.id, f.status, f.requester_id
+         from friendships f
+         where (f.requester_id = $1 and f.addressee_id = u.id)
+            or (f.requester_id = u.id and f.addressee_id = $1)
+         order by f.created_at desc
+         limit 1
+       ) f on true
+       where u.id <> $1
+         and (
+           $2 = ''
+           or position($2 in u.username_lower) > 0
+           or position($2 in lower(u.display_name)) > 0
+         )
+       order by u.username_lower asc
+       limit $3`,
+      [viewerId, query, limit],
+    );
+
+    return rows.map((row) => {
+      let relationship: DirectoryUserDto["relationship"] = "none";
+      if (row.friendship_status === "accepted") {
+        relationship = "friends";
+      } else if (row.friendship_status === "pending" && row.requester_id === viewerId) {
+        relationship = "pending_outgoing";
+      } else if (row.friendship_status === "pending") {
+        relationship = "pending_incoming";
+      }
+      return {
+        user: rowToUser(row),
+        relationship,
+        requestId: relationship === "none" ? null : row.friendship_id,
+      };
+    });
+  }
+
   async friendIds(userId: string): Promise<string[]> {
     const rows = await this.query<{ id: string }>(
       `select case when requester_id = $1 then addressee_id else requester_id end as id
@@ -571,7 +621,6 @@ export class Store {
     return `
       select c.id, c.kind, c.title, c.created_by, c.created_at,
              m.last_read_seq, m.muted,
-             coalesce(peers.receipt_seq, 0)::int as peer_last_read_seq,
              lm.id as last_id, lm.body as last_body, lm.seq as last_seq,
              lm.sender_id as last_sender_id, lm.sender_device_id as last_sender_device_id,
              lm.kind as last_kind, lm.created_at as last_created_at,
@@ -595,11 +644,6 @@ export class Store {
         join users u on u.id = cm.user_id
         where cm.conversation_id = c.id
       ) members on true
-      left join lateral (
-        select max(cm2.receipt_seq) as receipt_seq
-        from conversation_members cm2
-        where cm2.conversation_id = c.id and cm2.user_id <> $1
-      ) peers on true
       left join lateral (
         select count(*) as n from messages msg
         where msg.conversation_id = c.id and msg.seq > m.last_read_seq
@@ -634,7 +678,6 @@ export class Store {
       createdBy: row.created_by ?? null,
       createdAt: iso(row.created_at),
       lastReadSeq: Number(row.last_read_seq ?? 0),
-      peerLastReadSeq: Number(row.peer_last_read_seq ?? 0),
       unread: Number(row.unread ?? 0),
       muted: Boolean(row.muted),
       members,
@@ -697,18 +740,11 @@ export class Store {
     return Array.from(byUser.values());
   }
 
-  async updateLastRead(
-    conversationId: string,
-    userId: string,
-    seq: number,
-    shareReceipt = true,
-  ): Promise<void> {
+  async updateLastRead(conversationId: string, userId: string, seq: number): Promise<void> {
     await this.query(
-      `update conversation_members
-       set last_read_seq = greatest(last_read_seq, $3),
-           receipt_seq = case when $4 then greatest(receipt_seq, $3) else receipt_seq end
+      `update conversation_members set last_read_seq = greatest(last_read_seq, $3)
        where conversation_id = $1 and user_id = $2`,
-      [conversationId, userId, seq, shareReceipt],
+      [conversationId, userId, seq],
     );
   }
 

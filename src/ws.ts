@@ -13,7 +13,6 @@
  *   { t:"msg",    conversationId, message }
  *   { t:"ack",    clientId, id, conversationId, seq, createdAt }
  *   { t:"typing", conversationId, userId, state }
- *   { t:"read",   conversationId, userId, seq }
  *   { t:"presence", userId, online, lastSeen }
  *   { t:"friend", kind:"request"|"accepted"|"removed", user, requestId? }
  *   { t:"conversation", conversation }
@@ -189,19 +188,14 @@ export async function onMessage(
         return;
       }
 
-      // ----------------------------------------------------------- read receipt --
+      // Unread bookkeeping only. The other side is not told what was read:
+      // bubbles show server delivery, not a read mark.
       case "read": {
         const conversationId = String(frame.conversationId ?? "");
         const seq = Number(frame.seq ?? 0);
         if (!conversationId || !Number.isFinite(seq)) return;
         if (!(await store.isMember(conversationId, userId))) return;
-        await store.updateLastRead(conversationId, userId, Math.trunc(seq), true);
-        const members = await store.memberIds(conversationId);
-        hub.sendToUsers(
-          members,
-          { t: "read", conversationId, userId, seq: Math.trunc(seq) },
-          { exceptUserId: userId },
-        );
+        await store.updateLastRead(conversationId, userId, Math.trunc(seq));
         return;
       }
 

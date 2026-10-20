@@ -238,12 +238,6 @@ route("POST", "/v1/auth/register", false, async ({ req, ctx, ip }) => {
   rateLimit(`register:${ip}`, config.limits.rateRegisterPerMinute);
   const body = await readJson(req);
 
-  // A public relay should stay friends-only: when REGISTER_CODE is set on the
-  // server, new accounts must present it. Existing accounts log in normally.
-  if (config.registerCode && String(body.registerCode ?? "").trim() !== config.registerCode) {
-    throw new ApiError(403, "register_code_required", "This relay is invite-only. Enter the friends code.");
-  }
-
   const username = str(body.username, "username", {
     min: 3,
     max: config.limits.maxUsernameLength,
@@ -446,6 +440,16 @@ route("DELETE", "/v1/me", true, async ({ req, auth, ctx }) => {
 });
 
 // -- users --------------------------------------------------------------------
+
+// Everyone on this relay, for the invitation directory. The app filters this
+// list locally, so the relay only has to return the first page of accounts.
+route("GET", "/v1/people", true, async ({ req, auth, ctx }) => {
+  const me = needAuth(auth);
+  const url = new URL(req.url);
+  const q = (url.searchParams.get("q") ?? "").trim().toLowerCase().slice(0, 64);
+  const people = await ctx.store.listDirectory(me.userId, q, 200);
+  return json({ people });
+});
 
 route("GET", "/v1/users/:username", true, async ({ params, auth, ctx }) => {
   const me = needAuth(auth);
@@ -724,23 +728,11 @@ route("POST", "/v1/conversations/:id/read", true, async ({ req, params, auth, ct
   const conversationId = uuid(params.id, "id");
   const body = await readJson(req);
   const seq = int(body.seq, "seq", { min: 0 });
-  // The app still needs to advance its unread watermark when receipts are
-  // switched off; only the shared receipt (and the live frame) is optional.
-  const shareReceipt = body.receipt !== false;
   if (!(await ctx.store.isMember(conversationId, me.userId))) {
     throw new ApiError(403, "not_a_member", "You are not a member of this conversation.");
   }
-  await ctx.store.updateLastRead(conversationId, me.userId, seq, shareReceipt);
-
-  if (shareReceipt) {
-    const members = await ctx.store.memberIds(conversationId);
-    ctx.hub.sendToUsers(
-      members,
-      { t: "read", conversationId, userId: me.userId, seq },
-      { exceptUserId: me.userId },
-    );
-  }
-  return json({ ok: true, shareReceipt });
+  await ctx.store.updateLastRead(conversationId, me.userId, seq);
+  return json({ ok: true });
 });
 
 route("POST", "/v1/conversations/:id/mute", true, async ({ req, params, auth, ctx }) => {

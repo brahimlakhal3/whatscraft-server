@@ -13,12 +13,6 @@ export const config = {
 
   jwtSecret: process.env.JWT_SECRET ?? "dev-only-insecure-secret-change-me",
 
-  /**
-   * When set, POST /v1/auth/register requires a matching `registerCode`.
-   * Keeps a public relay friends-only. Empty = open registration (dev).
-   */
-  registerCode: (process.env.REGISTER_CODE ?? "").trim(),
-
   accessTtlSeconds: Number(process.env.ACCESS_TTL_SECONDS ?? 900),
   refreshTtlDays: Number(process.env.REFRESH_TTL_DAYS ?? 60),
 

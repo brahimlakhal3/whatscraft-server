@@ -5,8 +5,8 @@
  *   bun run scripts/smoke.ts    # terminal 2
  *
  * It registers accounts (one with two devices), connects real WebSockets, and
- * verifies auth, friends, plaintext delivery, typing, receipts, history, dedup
- * and account recovery. The last section covers the current cloud model:
+ * verifies auth, friends, the people directory, plaintext delivery, typing,
+ * unread bookkeeping, history, dedup and account recovery. The last section covers the current cloud model:
  * readable message bodies, per-account clear, and keyless device registration.
  * Earlier sections still exercise the legacy encrypted frame shape, which the
  * relay keeps accepting for installs that have not updated.
@@ -22,10 +22,6 @@ import {
 
 const BASE = (process.env.BASE_URL ?? "http://127.0.0.1:8080").replace(/\/$/, "");
 const WS_URL = `${BASE.replace(/^http/, "ws")}/ws`;
-
-// When the server sets REGISTER_CODE, new accounts must present it.
-const REGISTER_CODE = (process.env.REGISTER_CODE ?? "").trim();
-const gate = REGISTER_CODE ? { registerCode: REGISTER_CODE } : {};
 
 let passed = 0;
 let failed = 0;
@@ -155,7 +151,7 @@ async function registerUser(identity: Identity, username: string, displayName: s
   const device = makeDevice(identity);
   const data = await ok("/v1/auth/register", {
     method: "POST",
-    body: { username, displayName, password: "correct horse battery", device, ...gate },
+    body: { username, displayName, password: "correct horse battery", device },
   });
   return { ...data, username, device, identity };
 }
@@ -186,7 +182,6 @@ const weak = await api("/v1/auth/register", {
     displayName: "Weak",
     password: "short",
     device: makeDevice(await generateIdentity()),
-    ...gate,
   },
 });
 check("short passwords are rejected", weak.status === 400, weak.data);
@@ -198,7 +193,6 @@ const dupe = await api("/v1/auth/register", {
     displayName: "Impostor",
     password,
     device: makeDevice(await generateIdentity()),
-    ...gate,
   },
 });
 check("duplicate usernames are rejected", dupe.status === 409, dupe.data);
@@ -229,6 +223,26 @@ const accepted = await ok(`/v1/friends/requests/${bobFriends.incoming[0].id}/acc
   token: bob.accessToken,
 });
 check("accepting returns a direct conversation", Boolean(accepted.conversationId));
+
+const aliceDirectory = await ok("/v1/people", { token: alice.accessToken });
+const bobEntry = aliceDirectory.people.find((person: any) => person.user.id === bob.user.id);
+check("the directory lists everyone with their relationship", bobEntry?.relationship === "friends", bobEntry);
+check(
+  "the directory never lists the viewer",
+  !aliceDirectory.people.some((person: any) => person.user.id === alice.user.id),
+);
+const filteredDirectory = await ok(`/v1/people?q=${encodeURIComponent(bob.username)}`, {
+  token: alice.accessToken,
+});
+check(
+  "the directory search filters by username",
+  filteredDirectory.people.length === 1 && filteredDirectory.people[0].user.id === bob.user.id,
+  filteredDirectory.people.length,
+);
+const emptyDirectory = await ok(`/v1/people?q=${encodeURIComponent("missing" + suffix)}`, {
+  token: alice.accessToken,
+});
+check("the directory search can be empty", emptyDirectory.people.length === 0, emptyDirectory.people.length);
 
 const aliceConversations = await ok("/v1/conversations", { token: alice.accessToken });
 check("alice now has one conversation", aliceConversations.conversations.length === 1);
@@ -328,7 +342,7 @@ const tampered = await openMessage({
 }).then(() => "decrypted").catch((error: Error) => error.message);
 check("a modified ciphertext is rejected", tampered !== "decrypted", tampered);
 
-section("9. Reply and read receipts");
+section("9. Reply and unread bookkeeping");
 const replyId = crypto.randomUUID();
 const replyText = "Reçu 5/5 ✅";
 const replySealed = await sealMessage(bob.identity, conversationId, replyId, replyText, allDevices);
@@ -355,14 +369,13 @@ const typing = await aliceClient.ofType("typing");
 check("typing indicator arrives", typing.userId === bob.user.id && typing.state === "start", typing);
 
 bobClient.send({ t: "read", conversationId, seq: Number(replyAck.seq) });
-const read = await aliceClient.ofType("read");
-check("read receipt arrives", read.userId === bob.user.id && Number(read.seq) === Number(replyAck.seq), read);
-const aliceAfterRead = (await ok("/v1/conversations", { token: alice.accessToken })).conversations
+await Bun.sleep(200);
+const bobAfterRead = (await ok("/v1/conversations", { token: bob.accessToken })).conversations
   .find((c: any) => c.id === conversationId);
 check(
-  "the peer's read watermark comes back with the chat",
-  Number(aliceAfterRead?.peerLastReadSeq ?? 0) >= Number(replyAck.seq),
-  aliceAfterRead?.peerLastReadSeq,
+  "read advances the unread watermark",
+  Number(bobAfterRead?.lastReadSeq ?? 0) >= Number(replyAck.seq),
+  bobAfterRead?.lastReadSeq,
 );
 
 section("10. History");
@@ -507,6 +520,10 @@ const bobGraph = await ok("/v1/friends", { token: newLogin.accessToken });
 check("the removed side keeps no friends", aliceGraph.friends.length === 0, aliceGraph.friends);
 check("the removing side keeps no friends", bobGraph.friends.length === 0, bobGraph.friends);
 
+const removedDirectory = await ok("/v1/people", { token: alice.accessToken });
+const formerFriend = removedDirectory.people.find((person: any) => person.user.id === bob.user.id);
+check("a removed connection is inviteable again", formerFriend?.relationship === "none", formerFriend?.relationship);
+
 const aliceChats = await ok("/v1/conversations", { token: alice.accessToken });
 const bobChats = await ok("/v1/conversations", { token: newLogin.accessToken });
 check(
@@ -613,47 +630,6 @@ const bobStillSees = await ok(`/v1/conversations/${acceptedAgain.conversationId}
 });
 check("clearing is per-account", bobStillSees.messages.length === 2, bobStillSees.messages.length);
 
-// Read receipts are a separate watermark: turning them off still advances
-// unread bookkeeping but must not reveal the read position to the sender.
-const beforeReceipt = Number(
-  (await ok("/v1/conversations", { token: alice.accessToken })).conversations
-    .find((c: any) => c.id === acceptedAgain.conversationId)?.peerLastReadSeq ?? 0,
-);
-const receiptProbe = await ok(`/v1/conversations/${acceptedAgain.conversationId}/messages`, {
-  method: "POST",
-  token: alice.accessToken,
-  body: { id: crypto.randomUUID(), kind: "text", body: { text: "receipt probe" } },
-});
-await ok(`/v1/conversations/${acceptedAgain.conversationId}/read`, {
-  method: "POST",
-  token: newLogin.accessToken,
-  body: { seq: Number(receiptProbe.message.seq), receipt: false },
-});
-const hiddenReceipt = Number(
-  (await ok("/v1/conversations", { token: alice.accessToken })).conversations
-    .find((c: any) => c.id === acceptedAgain.conversationId)?.peerLastReadSeq ?? 0,
-);
-check(
-  "receipts stay private when they are switched off",
-  hiddenReceipt === beforeReceipt,
-  [beforeReceipt, hiddenReceipt],
-);
-
-await ok(`/v1/conversations/${acceptedAgain.conversationId}/read`, {
-  method: "POST",
-  token: newLogin.accessToken,
-  body: { seq: Number(receiptProbe.message.seq), receipt: true },
-});
-const sharedReceipt = Number(
-  (await ok("/v1/conversations", { token: alice.accessToken })).conversations
-    .find((c: any) => c.id === acceptedAgain.conversationId)?.peerLastReadSeq ?? 0,
-);
-check(
-  "a shared receipt survives a refresh",
-  sharedReceipt >= Number(receiptProbe.message.seq),
-  [receiptProbe.message.seq, sharedReceipt],
-);
-
 const keylessSuffix = Math.random().toString(36).slice(2, 8);
 const keyless = await ok("/v1/auth/register", {
   method: "POST",
@@ -662,7 +638,6 @@ const keyless = await ok("/v1/auth/register", {
     displayName: "No Key",
     password: "password123",
     device: { id: crypto.randomUUID(), name: "Test", platform: "android" },
-    ...gate,
   },
 });
 check(
